@@ -19,6 +19,7 @@ exec(char *path, char **argv)
   struct inode *ip;
   struct proghdr ph;
   pagetable_t pagetable = 0, oldpagetable;
+  pagetable_t kernel_pagetable = 0, old_kernelpagetable;
   struct proc *p = myproc();
 
   begin_op();
@@ -37,6 +38,8 @@ exec(char *path, char **argv)
 
   if((pagetable = proc_pagetable(p)) == 0)
     goto bad;
+  if((kernel_pagetable = proc_kernelpagetable(p)) == 0)
+    goto bad;
 
   // Load program into memory.
   for(i=0, off=elf.phoff; i<elf.phnum; i++, off+=sizeof(ph)){
@@ -49,7 +52,7 @@ exec(char *path, char **argv)
     if(ph.vaddr + ph.memsz < ph.vaddr)
       goto bad;
     uint64 sz1;
-    if((sz1 = uvmalloc(pagetable, sz, ph.vaddr + ph.memsz)) == 0)
+    if((sz1 = uvmalloc(pagetable, kernel_pagetable, sz, ph.vaddr + ph.memsz)) == 0)
       goto bad;
     sz = sz1;
     if(ph.vaddr % PGSIZE != 0)
@@ -68,7 +71,7 @@ exec(char *path, char **argv)
   // Use the second as the user stack.
   sz = PGROUNDUP(sz);
   uint64 sz1;
-  if((sz1 = uvmalloc(pagetable, sz, sz + 2*PGSIZE)) == 0)
+  if((sz1 = uvmalloc(pagetable, kernel_pagetable, sz, sz + 2*PGSIZE)) == 0)
     goto bad;
   sz = sz1;
   uvmclear(pagetable, sz-2*PGSIZE);
@@ -110,17 +113,29 @@ exec(char *path, char **argv)
     
   // Commit to the user image.
   oldpagetable = p->pagetable;
+  old_kernelpagetable = p->kernel_pagetable;
   p->pagetable = pagetable;
+  p->kernel_pagetable = kernel_pagetable;
   p->sz = sz;
   p->trapframe->epc = elf.entry;  // initial program counter = main
   p->trapframe->sp = sp; // initial stack pointer
+  
+  //flush the satp register and TLB
+  w_satp(MAKE_SATP(p->kernel_pagetable));
+  sfence_vma();
+  
   proc_freepagetable(oldpagetable, oldsz);
+  proc_freekernelpagetable(old_kernelpagetable);
 
+  if(p->pid == 1)
+    vmprint(p->pagetable);
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
   if(pagetable)
     proc_freepagetable(pagetable, sz);
+  if(kernel_pagetable)
+    proc_freekernelpagetable(kernel_pagetable);
   if(ip){
     iunlockput(ip);
     end_op();
