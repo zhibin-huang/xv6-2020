@@ -75,6 +75,16 @@ usertrap(void)
 
   if(p->killed)
     exit(-1);
+  
+  if(which_dev == 2 && p->alarminterval != -1 && p->enablehandler){
+    p->alarmticksleft--;
+    if(p->alarmticksleft == 0){
+      memmove(p->alarmframe, p->trapframe, PGSIZE);
+      p->trapframe->epc = (uint64)p->alarmhandler;
+      p->alarmticksleft = p->alarminterval;
+      p->enablehandler = 0;
+    }
+  }
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
