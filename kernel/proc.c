@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "file.h"
 
 struct cpu cpus[NCPU];
 
@@ -134,6 +138,7 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
+  memset(&p->mmap, 0, sizeof(p->mmap));
   return p;
 }
 
@@ -302,6 +307,13 @@ fork(void)
 
   np->state = RUNNABLE;
 
+  for(i = 0; i < 16; i++){
+    np->mmap[i] = p->mmap[i];
+    if(np->mmap[i].length > 0){
+      filedup(np->mmap[i].file);
+    }
+  }
+
   release(&np->lock);
 
   return pid;
@@ -350,6 +362,35 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for (int i = 0; i < 16; ++i) {
+    if (p->mmap[i].length > 0) {
+      if (p->mmap[i].flags & MAP_SHARED) {
+        // write back
+        int max = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+        int cur = 0;
+        struct file *f = p->mmap[i].file;
+        int length = p->mmap[i].length;
+        int addr = p->mmap[i].addr;
+        while (cur < length) {
+          int n1 = length - cur;
+          if (n1 > max) n1 = max;
+          begin_op();
+          ilock(f->ip);
+          int r = writei(f->ip, 1, addr + cur, p->mmap[i].offset + cur, n1);
+          iunlock(f->ip);
+          end_op();
+          cur += r;
+          if (r != n1) {
+            break;
+          }
+        }
+      }
+      // unmap the memory
+      uvmunmap(p->pagetable, p->mmap[i].addr, p->mmap[i].length / PGSIZE, 1);
+      //fileclose(p->mmap[i].file);
     }
   }
 
